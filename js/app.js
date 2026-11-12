@@ -471,7 +471,7 @@
         <div class="fn-row ${f.visible ? '' : 'hidden-fn'} ${f.id === state.activeId ? 'active' : ''}" data-id="${f.id}">
           <button class="color-dot" data-act="color" style="--c:${f.color}" title="切换颜色" aria-label="切换颜色"></button>
           <div class="fn-main">
-            <input class="fn-input" value="${escAttr(f.input)}" placeholder="例如 sin(x)/x 或 a*x^2" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="函数表达式">
+            <input class="fn-input" value="${escAttr(f.input)}" title="${escAttr(f.input)}" placeholder="例如 sin(x)/x 或 a*x^2" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="函数表达式">
             ${badge}
             <div class="fn-err" hidden></div>
           </div>
@@ -548,6 +548,7 @@
     const f = findFn(Number(row.dataset.id));
     if (!f) return;
     f.input = input.value;
+    input.title = input.value;
     if (f.kind === 'nderiv') {
       f.kind = 'fn';
       const badge = row.querySelector('.fn-badge');
