@@ -39,15 +39,18 @@
       this.ctx = canvas.getContext('2d');
       this.view = { xMin: -10, xMax: 10, yMin: -6, yMax: 6 };
       this.functions = [];
+      this.annotations = { point: null, tangent: null, asymptotes: [] };
       this.dpr = 1;
       this.w = 0;
       this.h = 0;
       this.hover = null;
       this.onViewChange = null;
+      this.onClick = null;
       this._raf = 0;
       this._pointers = new Map();
       this._pinch = null;
       this._panning = false;
+      this._downInfo = null;
       this._ready = false;
 
       this._bound = {
@@ -110,6 +113,11 @@
 
     setFunctions(fns) {
       this.functions = fns || [];
+      this.draw();
+    }
+
+    setAnnotations(annotations) {
+      this.annotations = annotations || { point: null, tangent: null, asymptotes: [] };
       this.draw();
     }
 
@@ -182,6 +190,9 @@
       this.canvas.setPointerCapture?.(e.pointerId);
       this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this._pointers.size === 1) {
+        this._downInfo = { x: e.clientX, y: e.clientY, t: Date.now() };
+      }
+      if (this._pointers.size === 1) {
         this._panning = true;
         this._last = { x: e.clientX, y: e.clientY };
         this.canvas.classList.add('dragging');
@@ -242,9 +253,14 @@
     _onUp(e) {
       if (this._pointers.has(e.pointerId)) this._pointers.delete(e.pointerId);
       if (this._pointers.size < 2) this._pinch = null;
+      const down = this._downInfo;
+      const isTap = down && this._pointers.size === 0 &&
+        Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6 &&
+        Date.now() - down.t < 700;
       if (this._pointers.size === 0) {
         this._panning = false;
         this._last = null;
+        this._downInfo = null;
         this.canvas.classList.remove('dragging');
       } else if (this._pointers.size === 1) {
         const p = [...this._pointers.values()][0];
@@ -252,6 +268,12 @@
         this._panning = true;
       }
       this.draw();
+      if (isTap && typeof this.onClick === 'function') {
+        const rect = this.canvas.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        this.onClick({ x: this.pxToX(px), y: this.pxToY(py), px, py });
+      }
     }
 
     _onLeave() {
@@ -288,8 +310,8 @@
 
       // background
       const bg = ctx.createLinearGradient(0, 0, 0, this.h);
-      bg.addColorStop(0, '#0d0a12');
-      bg.addColorStop(1, '#100c17');
+      bg.addColorStop(0, '#fffdfb');
+      bg.addColorStop(1, '#fcf9ff');
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, this.w, this.h);
 
@@ -303,13 +325,14 @@
 
       if (!this.functions.length || this.functions.every(f => !f.visible)) {
         ctx.save();
-        ctx.fillStyle = 'rgba(163,150,184,.35)';
+        ctx.fillStyle = 'rgba(90,70,110,.4)';
         ctx.font = '13px ui-sans-serif, system-ui, "PingFang SC", sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText('在左侧输入一个函数，图像会出现在这里', this.w / 2, this.h / 2);
         ctx.restore();
       }
 
+      this._drawAnnotations(ctx);
       this._drawHover(ctx);
     }
 
@@ -333,7 +356,7 @@
           const py = this.yToPx(y);
           ctx.moveTo(0, py); ctx.lineTo(w, py);
         }
-        ctx.strokeStyle = 'rgba(255,255,255,.028)';
+        ctx.strokeStyle = 'rgba(80,60,110,.05)';
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -347,7 +370,7 @@
         const py = this.yToPx(y);
         ctx.moveTo(0, py); ctx.lineTo(w, py);
       }
-      ctx.strokeStyle = 'rgba(255,255,255,.062)';
+      ctx.strokeStyle = 'rgba(80,60,110,.105)';
       ctx.lineWidth = 1;
       ctx.stroke();
       ctx.restore();
@@ -364,14 +387,14 @@
       ctx.save();
 
       // axis lines
-      ctx.strokeStyle = 'rgba(224,212,240,.42)';
+      ctx.strokeStyle = 'rgba(70,50,95,.5)';
       ctx.lineWidth = 1.15;
       if (hasX) {
         ctx.beginPath();
         ctx.moveTo(0, y0); ctx.lineTo(w, y0);
         ctx.stroke();
         // arrow
-        ctx.fillStyle = 'rgba(224,212,240,.42)';
+        ctx.fillStyle = 'rgba(70,50,95,.5)';
         ctx.beginPath();
         ctx.moveTo(w - 1, y0); ctx.lineTo(w - 9, y0 - 4); ctx.lineTo(w - 9, y0 + 4); ctx.closePath(); ctx.fill();
       }
@@ -379,14 +402,14 @@
         ctx.beginPath();
         ctx.moveTo(x0, h); ctx.lineTo(x0, 0);
         ctx.stroke();
-        ctx.fillStyle = 'rgba(224,212,240,.42)';
+        ctx.fillStyle = 'rgba(70,50,95,.5)';
         ctx.beginPath();
         ctx.moveTo(x0, 0); ctx.lineTo(x0 - 4, 8); ctx.lineTo(x0 + 4, 8); ctx.closePath(); ctx.fill();
       }
 
       // labels
       ctx.font = '11px ui-monospace, "Cascadia Code", Consolas, monospace';
-      ctx.fillStyle = 'rgba(158,144,178,.9)';
+      ctx.fillStyle = 'rgba(95,80,120,.95)';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
 
@@ -398,7 +421,7 @@
         const px = this.xToPx(x);
         if (px < 12 || px > w - 12) continue;
         ctx.beginPath();
-        ctx.strokeStyle = 'rgba(224,212,240,.35)';
+        ctx.strokeStyle = 'rgba(70,50,95,.4)';
         ctx.moveTo(px, y0 - 3);
         ctx.lineTo(px, y0 + 3);
         ctx.stroke();
@@ -418,7 +441,7 @@
         if (py < 12 || py > h - 8) continue;
         if (hasY) {
           ctx.beginPath();
-          ctx.strokeStyle = 'rgba(224,212,240,.35)';
+          ctx.strokeStyle = 'rgba(70,50,95,.4)';
           ctx.moveTo(x0 - 3, py);
           ctx.lineTo(x0 + 3, py);
           ctx.stroke();
@@ -427,7 +450,7 @@
       }
 
       if (hasX && hasY) {
-        ctx.fillStyle = 'rgba(158,144,178,.9)';
+        ctx.fillStyle = 'rgba(95,80,120,.95)';
         ctx.font = '11px ui-monospace, Consolas, monospace';
         ctx.textAlign = 'right';
         ctx.textBaseline = 'top';
@@ -502,6 +525,121 @@
       ctx.setLineDash([]);
     }
 
+    _pill(ctx, text, x, y, color, align = 'left') {
+      if (!text) return;
+      ctx.save();
+      ctx.font = '11px ui-monospace, "Cascadia Code", Consolas, monospace';
+      const tw = ctx.measureText(text).width;
+      const pw = tw + 14;
+      const ph = 20;
+      let bx = align === 'right' ? x - pw : x;
+      bx = clamp(bx, 4, Math.max(4, this.w - pw - 4));
+      const by = clamp(y - ph / 2, 4, Math.max(4, this.h - ph - 4));
+      ctx.beginPath();
+      const r = 7;
+      ctx.moveTo(bx + r, by);
+      ctx.lineTo(bx + pw - r, by);
+      ctx.quadraticCurveTo(bx + pw, by, bx + pw, by + r);
+      ctx.lineTo(bx + pw, by + ph - r);
+      ctx.quadraticCurveTo(bx + pw, by + ph, bx + pw - r, by + ph);
+      ctx.lineTo(bx + r, by + ph);
+      ctx.quadraticCurveTo(bx, by + ph, bx, by + ph - r);
+      ctx.lineTo(bx, by + r);
+      ctx.quadraticCurveTo(bx, by, bx + r, by);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255, 253, 250, .95)';
+      ctx.fill();
+      ctx.globalAlpha = .5;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = color;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, bx + 7, by + ph / 2 + 0.5);
+      ctx.restore();
+    }
+
+    _drawAnnotations(ctx) {
+      const a = this.annotations || {};
+      const v = this.view;
+      let stagger = 0;
+
+      // asymptotes
+      for (const item of (a.asymptotes || [])) {
+        ctx.save();
+        ctx.setLineDash([7, 5]);
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(2, 132, 199, .75)';
+        if (item.type === 'v') {
+          if (item.x < v.xMin || item.x > v.xMax) { ctx.restore(); continue; }
+          const px = this.xToPx(item.x);
+          ctx.beginPath();
+          ctx.moveTo(px, 0);
+          ctx.lineTo(px, this.h);
+          ctx.stroke();
+          this._pill(ctx, item.label, px + 7, 20 + stagger * 24, '#0284c7', 'left');
+        } else {
+          const y1 = item.m * v.xMin + item.b;
+          const y2 = item.m * v.xMax + item.b;
+          ctx.beginPath();
+          ctx.moveTo(0, this.yToPx(y1));
+          ctx.lineTo(this.w, this.yToPx(y2));
+          ctx.stroke();
+          const yRight = item.m * (v.xMax - (v.xMax - v.xMin) * 0.04) + item.b;
+          this._pill(ctx, item.label, this.w - 8, clamp(this.yToPx(yRight), 24, this.h - 20), '#0284c7', 'right');
+        }
+        ctx.restore();
+        stagger++;
+      }
+
+      // tangent
+      if (a.tangent) {
+        const t = a.tangent;
+        ctx.save();
+        ctx.setLineDash([9, 6]);
+        ctx.lineWidth = 1.8;
+        ctx.strokeStyle = 'rgba(225, 29, 72, .8)';
+        ctx.beginPath();
+        if (t.vertical) {
+          const px = this.xToPx(t.x0);
+          ctx.moveTo(px, 0);
+          ctx.lineTo(px, this.h);
+          ctx.stroke();
+        } else {
+          const y1 = t.m * v.xMin + t.b;
+          const y2 = t.m * v.xMax + t.b;
+          ctx.moveTo(0, this.yToPx(y1));
+          ctx.lineTo(this.w, this.yToPx(y2));
+          ctx.stroke();
+          const yLab = t.m * (v.xMax - (v.xMax - v.xMin) * 0.06) + t.b;
+          this._pill(ctx, '切线', this.w - 8, clamp(this.yToPx(yLab), 24, this.h - 20), '#e11d48', 'right');
+        }
+        ctx.restore();
+      }
+
+      // selected point
+      if (a.point) {
+        const p = a.point;
+        const px = this.xToPx(p.x);
+        const py = this.yToPx(p.y);
+        if (px >= -8 && px <= this.w + 8 && py >= -8 && py <= this.h + 8) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(px, py, 7, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 253, 250, .9)';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#7c3aed';
+          ctx.fill();
+          this._pill(ctx, p.label, px + 12, py - 26, '#7c3aed', 'left');
+          ctx.restore();
+        }
+      }
+    }
+
     _drawHover(ctx) {
       if (!this.hover) return;
       const { px, py } = this.hover;
@@ -510,7 +648,7 @@
       const y = this.pxToY(py);
 
       ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,.10)';
+      ctx.strokeStyle = 'rgba(70,50,95,.16)';
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
@@ -529,7 +667,7 @@
         ctx.arc(px, fpy, 4, 0, Math.PI * 2);
         ctx.fillStyle = fn.color;
         ctx.fill();
-        ctx.strokeStyle = 'rgba(16,13,22,.9)';
+        ctx.strokeStyle = 'rgba(255,255,255,.95)';
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }

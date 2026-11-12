@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#121018">
+<meta name="theme-color" content="#fbf8f3">
 <title>函数实验室 · Function Lab</title>
 <meta name="description" content="函数绘图、一键求导、数值求极限、参数滑块、照片识别导入。">
 <link rel="icon" href="img/favicon.svg" type="image/svg+xml">
@@ -60,6 +60,7 @@
       </div>
       <div id="paramList"></div>
       <p class="empty" id="paramEmpty">表达式里出现 x 以外的字母（如 a、b）会自动生成滑块，拖动即可看函数族的变化。</p>
+      <p class="hint">在参数行上滚动滚轮可微调（Shift ×10，Alt ×0.1）。</p>
     </section>
 
     <section class="card">
@@ -122,7 +123,20 @@
     <div class="edge-hint x-hint">X 轴缩放</div>
     <div class="edge-hint y-hint">Y 轴缩放</div>
     <div class="readout" id="readout">x = 0　y = 0</div>
-    <div class="plot-hint">滚轮缩放 · 拖动平移 · 底部 = X 轴 · 左侧 = Y 轴</div>
+    <div class="plot-hint">滚轮缩放 · 拖动平移 · 单击曲线看切线 · 底部 = X 轴</div>
+
+    <div class="point-menu hidden" id="pointMenu">
+      <div class="pm-head">
+        <span class="pm-func" id="pmFunc">函数</span>
+        <button id="pmClose" class="pm-close" aria-label="关闭点信息">✕</button>
+      </div>
+      <div class="pm-coord" id="pmCoord">(0, 0)</div>
+      <div class="pm-actions">
+        <button data-pm="tangent" id="pmTangent">切线</button>
+        <button data-pm="asym" id="pmAsym">渐近线</button>
+      </div>
+      <div class="pm-note hidden" id="pmNote"></div>
+    </div>
   </section>
 </main>
 

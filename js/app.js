@@ -5,7 +5,7 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-  const PALETTE = ['#ff7ab8', '#5eead4', '#fbbf24', '#a78bfa', '#60a5fa', '#fb7185', '#4ade80', '#f97316'];
+  const PALETTE = ['#e8467f', '#0d9488', '#d97706', '#7c3aed', '#2563eb', '#dc2626', '#16a34a', '#ea580c'];
   const CONSTS = new Set(['e', 'pi', 'tau', 'i', 'Infinity', 'NaN', 'true', 'false', 'null', 'undefined']);
   const FN_NAMES = new Set([
     'sin', 'cos', 'tan', 'sec', 'csc', 'cot', 'asin', 'acos', 'atan', 'arcsin', 'arccos', 'arctan',
@@ -26,6 +26,7 @@
     recomputeTimer: 0,
     limitTimer: 0,
     lastLimit: null,
+    point: null,
   };
 
   /* ------------------------------------------------------------------ *
@@ -188,6 +189,7 @@
       } catch (err) {
         str = node.toString();
       }
+      str = str.replace(/\s*\^\s*/g, '^').replace(/\s*\*\s*/g, '*').replace(/\s*\/\s*/g, '/');
       return { ok: true, expr: str };
     }
 
@@ -415,6 +417,7 @@
 
   function fmtCoord(v) {
     if (!Number.isFinite(v)) return '—';
+    if (Math.abs(v) < 1e-9) return '0';
     if (Math.abs(v) < 1e-6 || Math.abs(v) >= 1e6) return v.toExponential(3).replace('e+', 'e');
     return String(Number(v.toPrecision(5)));
   }
@@ -451,6 +454,51 @@
     return findFn(state.activeId) || state.funcs.find((f) => f.analysis && f.analysis.ok) || state.funcs[0] || null;
   }
 
+  function isDescendantOf(f, ancestorId) {
+    let cur = f;
+    let guard = 0;
+    while (cur && cur.parentId && guard++ < 100) {
+      if (cur.parentId === ancestorId) return true;
+      cur = findFn(cur.parentId);
+    }
+    return false;
+  }
+
+  function orderedFuncs() {
+    const byId = new Map(state.funcs.map((f) => [f.id, f]));
+    const children = new Map();
+    const roots = [];
+    for (const f of state.funcs) {
+      if (f.parentId && byId.has(f.parentId) && f.parentId !== f.id) {
+        if (!children.has(f.parentId)) children.set(f.parentId, []);
+        children.get(f.parentId).push(f);
+      } else {
+        roots.push(f);
+      }
+    }
+    const out = [];
+    const seen = new Set();
+    const walk = (f, depth) => {
+      if (!f || seen.has(f.id)) return;
+      seen.add(f.id);
+      out.push({ f, depth });
+      for (const c of (children.get(f.id) || [])) walk(c, depth + 1);
+    };
+    for (const r of roots) walk(r, 0);
+    for (const f of state.funcs) if (!seen.has(f.id)) walk(f, 0);
+    return out;
+  }
+
+  function subtreeEndIndex(id) {
+    let end = state.funcs.findIndex((f) => f.id === id);
+    if (end < 0) return state.funcs.length - 1;
+    for (let i = end + 1; i < state.funcs.length; i++) {
+      if (isDescendantOf(state.funcs[i], id)) end = i;
+      else break;
+    }
+    return end;
+  }
+
   function currentParams() {
     const out = {};
     for (const k of Object.keys(state.params)) out[k] = state.params[k].value;
@@ -464,11 +512,13 @@
   const fnList = $('#fnList');
 
   function renderFnList(focusId) {
-    fnList.innerHTML = state.funcs.map((f) => {
+    fnList.innerHTML = orderedFuncs().map(({ f, depth }) => {
       const badge = f.kind === 'nderiv' ? '<span class="fn-badge">f′ 数值</span>'
         : f.kind === 'deriv' ? '<span class="fn-badge">f′</span>' : '';
+      const visualDepth = Math.min(depth, 3);
       return `
-        <div class="fn-row ${f.visible ? '' : 'hidden-fn'} ${f.id === state.activeId ? 'active' : ''}" data-id="${f.id}">
+        <div class="fn-row ${f.visible ? '' : 'hidden-fn'} ${f.id === state.activeId ? 'active' : ''} ${depth ? 'child' : ''}"
+             data-id="${f.id}" data-depth="${visualDepth}" style="--depth:${visualDepth}">
           <button class="color-dot" data-act="color" style="--c:${f.color}" title="切换颜色" aria-label="切换颜色"></button>
           <div class="fn-main">
             <input class="fn-input" value="${escAttr(f.input)}" title="${escAttr(f.input)}" placeholder="例如 sin(x)/x 或 a*x^2" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="函数表达式">
@@ -480,10 +530,12 @@
             <button data-act="deriv" title="对这个函数求导">ƒ′</button>
             <button data-act="del" title="删除">✕</button>
           </div>
+          <div class="fn-note hidden"></div>
         </div>`;
     }).join('');
 
     for (const f of state.funcs) updateRowStatus(f);
+    updatePointNoteUI();
     if (focusId) {
       const input = fnList.querySelector(`.fn-row[data-id="${focusId}"] .fn-input`);
       if (input) { input.focus(); input.select(); }
@@ -512,6 +564,7 @@
   }
 
   function addFunc(input, opts = {}) {
+    const previousActive = state.activeId;
     const f = {
       id: state.nextId++,
       input: String(input || ''),
@@ -519,11 +572,16 @@
       color: opts.color || nextColor(),
       kind: opts.kind || 'fn',
       order: opts.order || 1,
+      parentId: opts.parentId || null,
       analysis: null,
       error: '',
     };
-    state.funcs.push(f);
-    state.activeId = f.id;
+    if (Number.isInteger(opts.insertAt) && opts.insertAt >= 0) {
+      state.funcs.splice(Math.min(opts.insertAt, state.funcs.length), 0, f);
+    } else {
+      state.funcs.push(f);
+    }
+    state.activeId = opts.activate === false ? (previousActive ?? f.id) : f.id;
     renderFnList(opts.focus ? f.id : null);
     if (!opts.silent) recompute();
     return f;
@@ -532,11 +590,16 @@
   function removeFunc(id) {
     const i = state.funcs.findIndex((f) => f.id === id);
     if (i < 0) return;
-    state.funcs.splice(i, 1);
-    if (!state.funcs.length) {
-      state.funcs.push({ id: state.nextId++, input: '', visible: true, color: PALETTE[0], kind: 'fn', order: 1, analysis: null, error: '' });
+    const doomed = new Set([id]);
+    for (const f of state.funcs) {
+      if (isDescendantOf(f, id)) doomed.add(f.id);
     }
-    if (state.activeId === id) state.activeId = state.funcs[Math.min(i, state.funcs.length - 1)].id;
+    state.funcs = state.funcs.filter((f) => !doomed.has(f.id));
+    if (state.point && doomed.has(state.point.funcId)) clearPoint();
+    if (!state.funcs.length) {
+      state.funcs.push({ id: state.nextId++, input: '', visible: true, color: PALETTE[0], kind: 'fn', order: 1, parentId: null, analysis: null, error: '' });
+    }
+    if (!findFn(state.activeId)) state.activeId = state.funcs[Math.min(i, state.funcs.length - 1)].id;
     renderFnList();
     recompute();
   }
@@ -669,6 +732,34 @@
     scheduleLimit(260);
   });
 
+  paramList.addEventListener('wheel', (e) => {
+    const row = e.target.closest('.param-row');
+    if (!row) return;
+    e.preventDefault();
+    const name = row.dataset.param;
+    const p = state.params[name];
+    if (!p) return;
+    const dir = e.deltaY < 0 ? 1 : -1;
+    const step = e.shiftKey ? 1 : e.altKey ? 0.001 : 0.01;
+    let v = Math.round((p.value + dir * step) * 1e6) / 1e6;
+    if (v < p.min || v > p.max) {
+      const pad = Math.max(1, Math.abs(v) * 0.2);
+      p.min = Math.min(p.min, v - pad);
+      p.max = Math.max(p.max, v + pad);
+    }
+    p.value = v;
+    const num = row.querySelector('.param-val');
+    const range = row.querySelector('input[type="range"]');
+    if (num) num.value = String(Number(v.toFixed(6)));
+    if (range) {
+      range.min = String(p.min);
+      range.max = String(p.max);
+      range.value = String(v);
+    }
+    refreshPlots();
+    scheduleLimit(180);
+  }, { passive: false });
+
   /* ------------------------------------------------------------------ *
    * recompute / plot
    * ------------------------------------------------------------------ */
@@ -750,7 +841,371 @@
       });
     }
     state.plot.setFunctions(plotted);
+    if (state.point) updatePointSelectionUI(false);
   }
+
+  /* ------------------------------------------------------------------ *
+   * selected point · tangent · asymptotes
+   * ------------------------------------------------------------------ */
+
+  const plotWrap = $('#plotWrap');
+  const pointMenu = $('#pointMenu');
+  const pmCoord = $('#pmCoord');
+  const pmFunc = $('#pmFunc');
+  const pmNote = $('#pmNote');
+  const pmTangent = $('#pmTangent');
+  const pmAsym = $('#pmAsym');
+
+  function fmtLine(m, b) {
+    if (!Number.isFinite(m) || !Number.isFinite(b)) return '—';
+    if (Math.abs(m) < 1e-10) return `y = ${fmtShort(b)}`;
+    const sign = m < 0 ? '−' : '';
+    const absM = Math.abs(m);
+    const coef = Math.abs(absM - 1) < 1e-10 ? '' : fmtShort(absM);
+    let s = `y = ${sign}${coef}x`;
+    if (Math.abs(b) > 1e-10) {
+      s += b > 0 ? ` + ${fmtShort(b)}` : ` − ${fmtShort(Math.abs(b))}`;
+    }
+    return s;
+  }
+
+  function fmtShort(v) {
+    if (!Number.isFinite(v)) return '—';
+    if (Math.abs(v) < 1e-9) return '0';
+    if (Math.abs(v) >= 1e5 || Math.abs(v) < 1e-4) {
+      return v.toExponential(3).replace('e+', 'e').replace(/e(-?)0+(\d)/, 'e$1$2');
+    }
+    return String(Number(v.toPrecision(5)));
+  }
+
+  function calcTangent(evalX, x, y) {
+    const h = Math.max(1e-7, Math.abs(x) * 1e-6);
+    let m = NaN;
+    const yp = evalX(x + h);
+    const ym = evalX(x - h);
+    if (Number.isFinite(yp) && Number.isFinite(ym)) m = (yp - ym) / (2 * h);
+    if (!Number.isFinite(m)) {
+      const y2 = evalX(x + h);
+      if (Number.isFinite(y2)) m = (y2 - y) / h;
+    }
+    if (!Number.isFinite(m) || Math.abs(m) > 1e7) {
+      return { vertical: true, x0: x, y0: y };
+    }
+    return { vertical: false, x0: x, y0: y, m, b: y - m * x };
+  }
+
+  function boundaryBetween(defined, undef, evalX) {
+    let a = defined;
+    let b = undef;
+    for (let i = 0; i < 60; i++) {
+      const mid = (a + b) / 2;
+      if (mid === a || mid === b) break;
+      if (Number.isFinite(evalX(mid))) a = mid;
+      else b = mid;
+    }
+    return (a + b) / 2;
+  }
+
+  function blowsAt(x0, side, evalX, threshold) {
+    const scale = Math.max(1, Math.abs(x0));
+    const vals = [1e-3, 1e-5, 1e-7, 1e-9]
+      .map((d) => evalX(x0 + side * d * scale))
+      .filter((v) => Number.isFinite(v));
+    if (vals.length < 2) return false;
+    const first = Math.abs(vals[0]);
+    const last = Math.abs(vals[vals.length - 1]);
+    return last > Math.max(8, first * 2) || last > threshold;
+  }
+
+  function infinityLine(evalX, dir) {
+    const xs = [1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12].map((k) => dir * k);
+    const pts = [];
+    for (const x of xs) {
+      const y = evalX(x);
+      if (Number.isFinite(y)) pts.push({ x, y });
+    }
+    if (pts.length < 5) return null;
+    const tail = pts.slice(-4);
+    const yLast = tail[tail.length - 1].y;
+    const yFirst = tail[0].y;
+    const yTol = Math.max(1e-5, Math.abs(yLast) * 1e-6);
+    if (Math.abs(yLast - yFirst) <= yTol) {
+      const b = Math.abs(yLast) < 1e-9 ? 0 : yLast;
+      return { m: 0, b };
+    }
+
+    const mvals = [];
+    for (let i = 1; i < tail.length; i++) {
+      mvals.push((tail[i].y - tail[i - 1].y) / (tail[i].x - tail[i - 1].x));
+    }
+    const m = mvals[mvals.length - 1];
+    if (!Number.isFinite(m)) return null;
+    const mTol = Math.max(1e-6, Math.abs(m) * 1e-6);
+    if (Math.abs(m - mvals[0]) > mTol) return null;
+    if (Math.abs(m) < 1e-4) return null;
+    const bvals = tail.slice(1).map((p) => p.y - m * p.x);
+    const b = bvals[bvals.length - 1];
+    if (!Number.isFinite(b)) return null;
+    const bTol = Math.max(1e-4, Math.abs(b) * 1e-4);
+    if (Math.abs(b - bvals[0]) > bTol) return null;
+    if (Math.abs(m) > 1e6) return null;
+    return { m, b: Math.abs(b) < 1e-8 ? 0 : b };
+  }
+
+  function findAsymptotes(evalX) {
+    const view = state.plot.view;
+    const range = view.xMax - view.xMin;
+    const spanY = view.yMax - view.yMin;
+    const threshold = Math.max(spanY * 2, 20);
+    const N = 900;
+    const samples = [];
+    for (let i = 0; i <= N; i++) {
+      const x = view.xMin + range * i / N;
+      let y = NaN;
+      try { y = evalX(x); } catch (err) { y = NaN; }
+      samples.push({ x, y });
+    }
+
+    const candidates = [];
+    for (let i = 1; i < N; i++) {
+      const y = samples[i].y;
+      if (!Number.isFinite(y) || Math.abs(y) < 1e-9) continue;
+      const a0 = Math.abs(1 / samples[i - 1].y);
+      const a1 = Math.abs(1 / y);
+      const a2 = Math.abs(1 / samples[i + 1].y);
+      if (!Number.isFinite(a0) || !Number.isFinite(a1) || !Number.isFinite(a2)) continue;
+      if (a1 <= a0 && a1 <= a2 && a1 < 0.05) {
+        let lo = samples[i - 1].x;
+        let hi = samples[i + 1].x;
+        for (let k = 0; k < 55; k++) {
+          const m1 = lo + (hi - lo) / 3;
+          const m2 = hi - (hi - lo) / 3;
+          const y1 = evalX(m1);
+          const y2 = evalX(m2);
+          const g1 = Number.isFinite(y1) && Math.abs(y1) > 1e-12 ? Math.abs(1 / y1) : Infinity;
+          const g2 = Number.isFinite(y2) && Math.abs(y2) > 1e-12 ? Math.abs(1 / y2) : Infinity;
+          if (g1 < g2) hi = m2; else lo = m1;
+        }
+        const x0 = (lo + hi) / 2;
+        if (blowsAt(x0, -1, evalX, threshold) || blowsAt(x0, 1, evalX, threshold)) {
+          candidates.push(x0);
+        }
+      }
+    }
+
+    for (let i = 0; i <= N; i++) {
+      if (Number.isFinite(samples[i].y)) continue;
+      let left = null;
+      let right = null;
+      for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+        if (Number.isFinite(samples[j].y)) { left = samples[j]; break; }
+      }
+      for (let j = i + 1; j <= Math.min(N, i + 3); j++) {
+        if (Number.isFinite(samples[j].y)) { right = samples[j]; break; }
+      }
+      if (left) {
+        const xb = boundaryBetween(left.x, samples[i].x, evalX);
+        if (blowsAt(xb, -1, evalX, threshold)) candidates.push(xb);
+      }
+      if (right) {
+        const xb = boundaryBetween(right.x, samples[i].x, evalX);
+        if (blowsAt(xb, 1, evalX, threshold)) candidates.push(xb);
+      }
+    }
+
+    const out = [];
+    const verticals = [];
+    for (const x of candidates.sort((a, b) => a - b)) {
+      if (!Number.isFinite(x)) continue;
+      if (verticals.some((v) => Math.abs(v - x) < range * 1e-4)) continue;
+      verticals.push(x);
+      if (verticals.length <= 8) out.push({ type: 'v', x, label: `x = ${fmtShort(x)}` });
+    }
+
+    const lines = [];
+    for (const dir of [1, -1]) {
+      const line = infinityLine(evalX, dir);
+      if (!line) continue;
+      const dup = lines.some((l) =>
+        Math.abs(l.m - line.m) < Math.max(1e-4, Math.abs(line.m) * 1e-4) &&
+        Math.abs(l.b - line.b) < Math.max(1e-3, Math.abs(line.b) * 1e-3));
+      if (dup) continue;
+      lines.push(line);
+    }
+    for (const line of lines) {
+      if (Math.abs(line.m) < 1e-8) {
+        if (line.b < view.yMin - spanY * 0.5 || line.b > view.yMax + spanY * 0.5) continue;
+        out.push({ type: 'line', m: 0, b: line.b, label: `y = ${fmtShort(line.b)}` });
+      } else {
+        const y1 = line.m * view.xMin + line.b;
+        const y2 = line.m * view.xMax + line.b;
+        if ((y1 < view.yMin - spanY && y2 < view.yMin - spanY) ||
+            (y1 > view.yMax + spanY && y2 > view.yMax + spanY)) continue;
+        out.push({ type: 'line', m: line.m, b: line.b, label: fmtLine(line.m, line.b) });
+      }
+    }
+    return out;
+  }
+
+  function clearPoint() {
+    state.point = null;
+    pointMenu.classList.add('hidden');
+    if (state.plot) state.plot.setAnnotations(null);
+    updatePointNoteUI();
+  }
+
+  function updatePointNoteUI() {
+    $$('.fn-note').forEach((el) => {
+      el.hidden = true;
+      el.classList.add('hidden');
+      el.innerHTML = '';
+    });
+    const pt = state.point;
+    if (!pt || !pt.funcId) return;
+    const f = findFn(pt.funcId);
+    if (!f) return;
+    const row = fnList.querySelector(`.fn-row[data-id="${f.id}"]`);
+    if (!row) return;
+    const note = row.querySelector('.fn-note');
+    if (!note) return;
+    const lines = [];
+    lines.push(`<div class="note-line"><span class="note-key">点 P</span><span class="note-math">(${fmtCoord(pt.x)}, ${fmtCoord(pt.y)})</span></div>`);
+    if (pt.showTangent && pt.tangent) {
+      const t = pt.tangent;
+      const eq = t.vertical ? `x = ${fmtShort(t.x0)}` : fmtLine(t.m, t.b);
+      lines.push(`<div class="note-line"><span class="note-key">切线</span><span class="note-math">${eq}</span></div>`);
+    }
+    if (pt.showAsym) {
+      const asy = (pt.asymptotes || []).map((a) => a.label);
+      lines.push(`<div class="note-line"><span class="note-key">渐近线</span><span class="note-math">${asy.length ? asy.join('；') : '当前视图内未发现'}</span></div>`);
+    }
+    note.innerHTML = lines.join('');
+    note.hidden = false;
+    note.classList.remove('hidden');
+  }
+
+  function positionPointMenu() {
+    const pt = state.point;
+    if (!pt) return;
+    const px = state.plot.xToPx(pt.x);
+    const py = state.plot.yToPx(pt.y);
+    const w = state.plot.w;
+    const h = state.plot.h;
+    if (px < -12 || px > w + 12 || py < -12 || py > h + 12) {
+      pointMenu.classList.add('hidden');
+      return;
+    }
+    pointMenu.classList.remove('hidden');
+    const mw = pointMenu.offsetWidth || 212;
+    const mh = pointMenu.offsetHeight || 112;
+    let left = px + 16;
+    let top = py - 14;
+    if (left + mw > w - 8) left = px - mw - 16;
+    if (left < 8) left = 8;
+    if (top + mh > h - 8) top = py - mh - 14;
+    top = Math.max(8, Math.min(top, h - mh - 8));
+    pointMenu.style.left = `${left}px`;
+    pointMenu.style.top = `${top}px`;
+  }
+
+  function updatePointSelectionUI(showMenu) {
+    const pt = state.point;
+    if (!pt) {
+      pointMenu.classList.add('hidden');
+      state.plot.setAnnotations(null);
+      updatePointNoteUI();
+      return;
+    }
+    const f = pt.funcId ? findFn(pt.funcId) : null;
+    if (pt.funcId && (!f || !f.analysis || !f.analysis.ok || !f.visible)) {
+      clearPoint();
+      return;
+    }
+
+    let evalX = null;
+    if (f) {
+      evalX = makeEvalX(f, currentParams());
+      const y = evalX(pt.x);
+      if (Number.isFinite(y)) pt.y = y;
+      if (pt.showTangent) pt.tangent = calcTangent(evalX, pt.x, pt.y);
+      if (pt.showAsym) pt.asymptotes = findAsymptotes(evalX);
+    } else {
+      pt.tangent = null;
+      pt.asymptotes = [];
+    }
+
+    state.plot.setAnnotations({
+      point: { x: pt.x, y: pt.y, label: `P (${fmtCoord(pt.x)}, ${fmtCoord(pt.y)})` },
+      tangent: pt.showTangent ? pt.tangent : null,
+      asymptotes: pt.showAsym ? pt.asymptotes : [],
+    });
+
+    pmFunc.textContent = f ? f.input : '自由点';
+    pmCoord.textContent = `(${fmtCoord(pt.x)}, ${fmtCoord(pt.y)})`;
+    pmTangent.disabled = !f;
+    pmAsym.disabled = !f;
+    pmTangent.classList.toggle('active', !!pt.showTangent);
+    pmAsym.classList.toggle('active', !!pt.showAsym);
+
+    const bits = [];
+    if (pt.showTangent && pt.tangent) {
+      bits.push(`切线 ${pt.tangent.vertical ? `x = ${fmtShort(pt.tangent.x0)}` : fmtLine(pt.tangent.m, pt.tangent.b)}`);
+    }
+    if (pt.showAsym) {
+      const labels = (pt.asymptotes || []).map((a) => a.label);
+      bits.push(labels.length ? `渐近线 ${labels.join('；')}` : '当前视图内未发现渐近线');
+    }
+    if (bits.length) {
+      pmNote.textContent = bits.join(' · ');
+    } else {
+      pmNote.textContent = f ? '点击「切线」或「渐近线」查看。' : '点击曲线附近可选择函数。';
+    }
+    pmNote.classList.remove('hidden');
+    updatePointNoteUI();
+    positionPointMenu();
+  }
+
+  function handlePlotClick(pt) {
+    let best = null;
+    for (const pf of state.plot.functions) {
+      if (!pf.visible) continue;
+      const y = pf.evalX(pt.x);
+      if (!Number.isFinite(y)) continue;
+      const dy = Math.abs(state.plot.yToPx(y) - pt.py);
+      if (dy <= 24 && (!best || dy < best.dy)) best = { pf, y, dy };
+    }
+    if (best) {
+      state.point = {
+        funcId: best.pf.id, x: pt.x, y: best.y,
+        showTangent: false, showAsym: false, tangent: null, asymptotes: [],
+      };
+      state.activeId = best.pf.id;
+      for (const f of state.funcs) updateRowStatus(f);
+    } else {
+      state.point = {
+        funcId: null, x: pt.x, y: pt.y,
+        showTangent: false, showAsym: false, tangent: null, asymptotes: [],
+      };
+    }
+    updatePointSelectionUI(true);
+  }
+
+  pmTangent.addEventListener('click', () => {
+    if (!state.point || !state.point.funcId) return;
+    state.point.showTangent = !state.point.showTangent;
+    updatePointSelectionUI(true);
+  });
+
+  pmAsym.addEventListener('click', () => {
+    if (!state.point || !state.point.funcId) return;
+    state.point.showAsym = !state.point.showAsym;
+    updatePointSelectionUI(true);
+    if (state.point.showAsym && !(state.point.asymptotes || []).length) {
+      toast('当前视图内未发现渐近线');
+    }
+  });
+
+  $('#pmClose').addEventListener('click', clearPoint);
 
   /* ------------------------------------------------------------------ *
    * derivative
@@ -761,10 +1216,23 @@
     if (!f.analysis || !f.analysis.ok) { toast('这个函数还不能求导，先修正表达式'); return; }
     const res = MathEngine.derivative(f.input, order);
     if (res.ok) {
-      addFunc(res.expr, { kind: 'deriv', color: nextColor(), focus: false });
+      addFunc(res.expr, {
+        kind: 'deriv',
+        color: nextColor(),
+        parentId: f.id,
+        insertAt: subtreeEndIndex(f.id) + 1,
+        activate: false,
+      });
       toast(order === 2 ? '已加入二阶导函数' : '已加入导函数 f′(x)');
     } else {
-      addFunc(f.input, { kind: 'nderiv', order, color: nextColor() });
+      addFunc(f.input, {
+        kind: 'nderiv',
+        order,
+        color: nextColor(),
+        parentId: f.id,
+        insertAt: subtreeEndIndex(f.id) + 1,
+        activate: false,
+      });
       toast('符号求导失败，已改用数值导数');
     }
   }
@@ -911,6 +1379,10 @@
     readout.textContent = 'x = 0　y = 0';
   });
 
+  window.addEventListener('resize', () => {
+    if (state.point) positionPointMenu();
+  });
+
   function toggleFullscreen() {
     if (!document.fullscreenElement) {
       const p = document.documentElement.requestFullscreen?.();
@@ -952,10 +1424,13 @@
   });
 
   function encodePayload() {
+    const list = state.funcs.filter((f) => f.input.trim());
+    const index = new Map(list.map((f, i) => [f.id, i]));
     const payload = {
       v: 1,
-      f: state.funcs.filter((f) => f.input.trim()).map((f) => ({
+      f: list.map((f) => ({
         e: f.input, k: f.kind, o: f.order, c: f.color, h: f.visible ? 1 : 0,
+        p: f.parentId != null && index.has(f.parentId) ? index.get(f.parentId) : -1,
       })),
       p: Object.fromEntries(Object.entries(state.params).map(([k, v]) => [k, v.value])),
       w: state.plot.view,
@@ -1010,10 +1485,17 @@
         color: item.c || PALETTE[state.funcs.length % PALETTE.length],
         kind: item.k === 'deriv' || item.k === 'nderiv' ? item.k : 'fn',
         order: item.o === 2 ? 2 : 1,
+        parentId: null,
         analysis: null,
         error: '',
       });
     }
+    data.f.forEach((item, i) => {
+      const p = Number(item.p);
+      if (Number.isInteger(p) && p >= 0 && p < state.funcs.length && p !== i) {
+        state.funcs[i].parentId = state.funcs[p].id;
+      }
+    });
     if (!state.funcs.length) return false;
     state.activeId = state.funcs[0].id;
     if (data.w && typeof data.w === 'object' && Number.isFinite(data.w.xMin)) {
@@ -1054,7 +1536,9 @@
   $('#btnPhotoClose').addEventListener('click', closePhotoModal);
   photoModal.addEventListener('click', (e) => { if (e.target === photoModal) closePhotoModal(); });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !photoModal.classList.contains('hidden')) closePhotoModal();
+    if (e.key !== 'Escape') return;
+    if (!photoModal.classList.contains('hidden')) closePhotoModal();
+    else if (state.point) clearPoint();
   });
 
   dropzone.addEventListener('click', (e) => {
@@ -1173,6 +1657,7 @@
     }
     s = s.replace(/[×✕]/g, '*').replace(/[÷]/g, '/').replace(/[−–—]/g, '-')
       .replace(/[“”"'`]/g, '')
+      .replace(/[™ˆ˄∧]/g, '^')
       .replace(/π/g, 'pi').replace(/∞/g, 'Infinity')
       .replace(/√/g, 'sqrt')
       .replace(/[（]/g, '(').replace(/[）]/g, ')')
@@ -1283,6 +1768,8 @@
     }
 
     state.plot = new Plotter(canvas);
+    state.plot.onClick = handlePlotClick;
+    state.plot.onViewChange = () => positionPointMenu();
 
     const loaded = loadFromHash();
     if (!loaded) {
