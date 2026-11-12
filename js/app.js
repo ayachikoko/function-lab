@@ -573,6 +573,7 @@
       kind: opts.kind || 'fn',
       order: opts.order || 1,
       parentId: opts.parentId || null,
+      autoDeriv: !!opts.autoDeriv,
       analysis: null,
       error: '',
     };
@@ -612,14 +613,38 @@
     if (!f) return;
     f.input = input.value;
     input.title = input.value;
-    if (f.kind === 'nderiv') {
+    if (f.kind === 'nderiv' || f.autoDeriv) {
       f.kind = 'fn';
+      f.autoDeriv = false;
       const badge = row.querySelector('.fn-badge');
       if (badge) badge.remove();
     }
+    if (!f.autoDeriv) refreshAutoChildren(f);
     setActive(f.id);
     scheduleRecompute();
   });
+
+  function refreshAutoChildren(parent) {
+    for (const child of state.funcs) {
+      if (child.parentId !== parent.id || !child.autoDeriv) continue;
+      let next = null;
+      if (child.kind === 'deriv') {
+        const res = MathEngine.derivative(parent.input, child.order);
+        if (res.ok) next = res.expr;
+      } else if (child.kind === 'nderiv') {
+        next = parent.input;
+      }
+      if (next != null) {
+        child.input = next;
+        const input = fnList.querySelector(`.fn-row[data-id="${child.id}"] .fn-input`);
+        if (input) {
+          input.value = next;
+          input.title = next;
+        }
+      }
+      refreshAutoChildren(child);
+    }
+  }
 
   fnList.addEventListener('focusin', (e) => {
     const row = e.target.closest('.fn-row');
@@ -861,7 +886,7 @@
     if (Math.abs(m) < 1e-10) return `y = ${fmtShort(b)}`;
     const sign = m < 0 ? '−' : '';
     const absM = Math.abs(m);
-    const coef = Math.abs(absM - 1) < 1e-10 ? '' : fmtShort(absM);
+    const coef = Math.abs(absM - 1) < 1e-6 ? '' : fmtShort(absM);
     let s = `y = ${sign}${coef}x`;
     if (Math.abs(b) > 1e-10) {
       s += b > 0 ? ` + ${fmtShort(b)}` : ` − ${fmtShort(Math.abs(b))}`;
@@ -1218,10 +1243,12 @@
     if (res.ok) {
       addFunc(res.expr, {
         kind: 'deriv',
+        order,
         color: nextColor(),
         parentId: f.id,
         insertAt: subtreeEndIndex(f.id) + 1,
         activate: false,
+        autoDeriv: true,
       });
       toast(order === 2 ? '已加入二阶导函数' : '已加入导函数 f′(x)');
     } else {
@@ -1232,6 +1259,7 @@
         parentId: f.id,
         insertAt: subtreeEndIndex(f.id) + 1,
         activate: false,
+        autoDeriv: true,
       });
       toast('符号求导失败，已改用数值导数');
     }
@@ -1431,6 +1459,7 @@
       f: list.map((f) => ({
         e: f.input, k: f.kind, o: f.order, c: f.color, h: f.visible ? 1 : 0,
         p: f.parentId != null && index.has(f.parentId) ? index.get(f.parentId) : -1,
+        a: f.autoDeriv ? 1 : 0,
       })),
       p: Object.fromEntries(Object.entries(state.params).map(([k, v]) => [k, v.value])),
       w: state.plot.view,
@@ -1486,6 +1515,7 @@
         kind: item.k === 'deriv' || item.k === 'nderiv' ? item.k : 'fn',
         order: item.o === 2 ? 2 : 1,
         parentId: null,
+        autoDeriv: item.a === 1,
         analysis: null,
         error: '',
       });
