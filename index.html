@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#121018">
+<title>函数实验室 · Function Lab</title>
+<meta name="description" content="函数绘图、一键求导、数值求极限、参数滑块、照片识别导入。">
+<link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">ƒ</span>
+    <div class="brand-text">
+      <h1>函数实验室</h1>
+      <p>Function Lab · 绘图 / 求导 / 极限</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="btnPhoto" class="btn primary">
+      <span class="ico">▣</span> 照片识别
+    </button>
+    <button id="btnFull" class="btn icon-only" title="全屏显示" aria-label="全屏显示">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="sidebar">
+    <section class="card">
+      <div class="card-head">
+        <h2>函数</h2>
+        <button id="btnAdd" class="btn tiny">＋ 添加</button>
+      </div>
+      <div id="fnList" class="fn-list"></div>
+      <div class="preset-row">
+        <label for="presetSelect">示例</label>
+        <select id="presetSelect">
+          <option value="">选择一个经典例子…</option>
+          <option value="sin(x)/x">lim sin(x)/x</option>
+          <option value="(1+a/x)^x">lim (1+a/x)^x（参数 a）</option>
+          <option value="(e^(a*x)-1)/x">lim (e^(ax)−1)/x（参数 a）</option>
+          <option value="(cos(x)-1)/x^2">lim (cos x−1)/x²</option>
+          <option value="(x^2-1)/(x-1)">lim (x²−1)/(x−1)</option>
+          <option value="x^x">lim x^x (x→0+)</option>
+          <option value="abs(x)/x">lim |x|/x</option>
+          <option value="sin(a*x)/x">lim sin(ax)/x（参数 a）</option>
+          <option value="(sqrt(1+x)-1)/x">lim (√(1+x)−1)/x</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card" id="paramCard">
+      <div class="card-head">
+        <h2>参数</h2>
+        <span class="tag" id="paramHint">自动识别</span>
+      </div>
+      <div id="paramList"></div>
+      <p class="empty" id="paramEmpty">表达式里出现 x 以外的字母（如 a、b）会自动生成滑块，拖动即可看函数族的变化。</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>求导</h2></div>
+      <p class="muted">对当前选中的函数一键求导，结果作为新曲线加入图层。</p>
+      <div class="row">
+        <button id="btnDeriv" class="btn wide primary">d/dx 一键求导</button>
+        <button id="btnDeriv2" class="btn">二阶导</button>
+      </div>
+      <p class="hint" id="derivHint">支持初等函数；遇到不可符号求导的函数会自动改用数值导数。</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>极限</h2></div>
+      <div class="row two">
+        <select id="limitDir" aria-label="极限方向">
+          <option value="both">双侧 x→</option>
+          <option value="left">左侧 x→</option>
+          <option value="right">右侧 x→</option>
+          <option value="pinf">x→+∞</option>
+          <option value="ninf">x→−∞</option>
+        </select>
+        <input id="limitPoint" value="0" placeholder="0, pi/2 …" aria-label="趋近点" spellcheck="false">
+      </div>
+      <button id="btnLimit" class="btn wide">计算极限（当前参数）</button>
+      <div id="limitResult" class="result hidden"></div>
+    </section>
+
+    <footer class="side-foot">
+      <button id="btnShare" class="btn tiny">复制分享链接</button>
+      <button id="btnClear" class="btn tiny danger">清空</button>
+    </footer>
+  </aside>
+
+  <section class="plot-wrap" id="plotWrap">
+    <canvas id="plot" aria-label="函数图像"></canvas>
+
+    <div class="plot-toolbar">
+      <div class="tool-group" role="group" aria-label="X 轴缩放">
+        <span class="tool-label x">X</span>
+        <button class="tool-btn" data-zoom="xout" title="X 轴缩小">−</button>
+        <button class="tool-btn" data-zoom="xin" title="X 轴放大">＋</button>
+      </div>
+      <div class="tool-group" role="group" aria-label="Y 轴缩放">
+        <span class="tool-label y">Y</span>
+        <button class="tool-btn" data-zoom="yout" title="Y 轴缩小">−</button>
+        <button class="tool-btn" data-zoom="yin" title="Y 轴放大">＋</button>
+      </div>
+      <div class="tool-group" role="group" aria-label="全屏双向缩放">
+        <span class="tool-label xy">XY</span>
+        <button class="tool-btn" data-zoom="out" title="双向缩小">−</button>
+        <button class="tool-btn" data-zoom="in" title="双向放大">＋</button>
+      </div>
+      <button class="tool-btn" id="btnReset" title="重置视图">↺</button>
+      <button class="tool-btn" id="btnPng" title="导出 PNG" aria-label="导出 PNG">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
+      </button>
+    </div>
+
+    <div class="edge-hint x-hint">X 轴缩放</div>
+    <div class="edge-hint y-hint">Y 轴缩放</div>
+    <div class="readout" id="readout">x = 0　y = 0</div>
+    <div class="plot-hint">滚轮缩放 · 拖动平移 · 底部 = X 轴 · 左侧 = Y 轴</div>
+  </section>
+</main>
+
+<div class="modal hidden" id="photoModal" role="dialog" aria-modal="true" aria-labelledby="photoTitle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h2 id="photoTitle">照片识别函数</h2>
+        <p class="muted">印刷体效果较好；识别后可先修改再导入。</p>
+      </div>
+      <button class="btn icon-only" id="btnPhotoClose" aria-label="关闭">✕</button>
+    </div>
+
+    <div class="dropzone" id="dropzone" tabindex="0">
+      <div class="dz-icon">▣</div>
+      <p class="dz-title">拖入图片，或点击选择</p>
+      <p class="dz-sub">支持 Ctrl/⌘ + V 粘贴截图</p>
+      <div class="dz-actions">
+        <button class="btn tiny" id="btnPickFile">选择图片</button>
+        <button class="btn tiny" id="btnPickCamera">拍照</button>
+      </div>
+      <input type="file" id="fileInput" accept="image/*" hidden>
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+    </div>
+
+    <div class="preview hidden" id="photoPreview">
+      <img id="previewImg" alt="待识别的公式图片">
+    </div>
+
+    <div class="progress hidden" id="ocrProgress">
+      <div class="bar"><i id="ocrBar"></i></div>
+      <span id="ocrStatus">准备中…</span>
+    </div>
+
+    <label class="field-label" for="ocrText">识别结果（可修改）</label>
+    <textarea id="ocrText" rows="3" spellcheck="false" placeholder="识别结果会出现在这里，例如 sin(a*x)/x"></textarea>
+    <p class="hint">常见误差：上标 2 被识别成普通数字、括号缺失。可手动补成 x^2、sin(x) 等。</p>
+
+    <div class="modal-actions">
+      <button class="btn" id="btnOcrRun" disabled>开始识别</button>
+      <button class="btn primary" id="btnOcrImport" disabled>导入函数</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="vendor/math.min.js"></script>
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="js/plot.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
